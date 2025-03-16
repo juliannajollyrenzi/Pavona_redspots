@@ -32,8 +32,10 @@ Data for LTER 0 were sent by Tom Adam on January 27, 2025. Tom notes: "Here are 
 Data for LTER 2 were downloaded online from the MCR data catalog by Julianna. Note from the metadata: "Beginning in July 2021 data are raw temperature values sampled every two minutes (SBE 39s and SBE 56s) or eight minutes (Onset HOBOs) depending on the instrument."
 
 ```{r read in data}
+# LTER 0 data from Tom
 lter0 <- read_csv(here("raw_data", "FOR00_BTM_10m_20170808_20240704.csv"))
 
+# LTER 2 data from online data catalog
 lter2 <- read_csv(here("raw_data", "MCR_LTER02_BottomMountThermistors_20230323.csv")) %>% 
   filter(reef_type_code == "FOR") %>% 
   filter(sensor_depth_m == 10) %>% 
@@ -41,6 +43,9 @@ lter2 <- read_csv(here("raw_data", "MCR_LTER02_BottomMountThermistors_20230323.c
   mutate(year = year(time_local)) %>% 
   filter(year > 2020 &
            year < 2023)
+
+# photomosaic dates
+photo_dates <- read_csv(here("raw_data", "photomosaic_dates.csv"))
 ```
 
 # LTER 0
@@ -245,6 +250,414 @@ lter0.2 %>%
   geom_line() # looks right!
 ```
 
+# Write CSV
 
+```{r}
+write_csv(lter0.2, here("cleaned_data", "hourlytemps_lter0_2.csv"))
+```
+
+# Get statistics for preceeding 6 months
+
+## Averages
+
+Need dates of when photomosaics were taken (approximately), which I found by looking on Grit under the `RECHARGE_Timeline`, `RECHARGE_Timeline_March_2022`, and `RECHARGE_Timeline_Aug2022` documents (want to take the last day of the time period)
+
+- 7/20/2018 for 2018
+- 8/4/2019 for 2019
+- 8/21/2020 for 2020
+- 7/29/2021 for 2021
+- 7/23/2022 for 2022
+
+```{r}
+photo_dates %>% 
+  mutate(photo_datetime = as_datetime(paste0(photo_year, "-", photo_month, "-", photo_day))) %>% 
+  # get the date of the half year previous
+  mutate(photo_6mo_date = photo_datetime - make_difftime(day = round(365/2))) %>% 
+  # get the date of the 2 months previous
+  mutate(photo_2mo_date = photo_datetime - make_difftime(day = round(365/6))) %>% 
+  # get the date of the 10 months preceeding (can't do 12 because 2017 doesn't go back far enough)
+  mutate(photo_10mo_date = photo_datetime - make_difftime(day = round(365/12*10))) -> photo_dates_2
+```
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_6mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_6mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_6mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_6mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_6mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_6mo
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_6mo %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_6mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_6mo_temp = mean(mean_hr_temp_c)) -> mean_6mo
+  
+```
+
+Get mean max 
+
+```{r}
+lter0.2_6mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint, yearGR, monthGR, dayGR) %>% 
+  summarize(max_daily_temp = max(mean_hr_temp_c)) %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_6mo_mean_max = mean(max_daily_temp)) -> mean_max_6mo
+  
+```
+
+Compare
+
+```{r}
+mean_6mo %>% 
+  full_join(mean_max_6mo) %>% 
+  ggplot(aes(x = mean_6mo_temp, y = mean_6mo_mean_max)) +
+  geom_point()
+```
+
+Exact same ordering
+
+# Get statistics for preceeding 2 months
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_2mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_2mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_2mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_2mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_2mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_2mo
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_2mo %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_2mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_2mo_temp = mean(mean_hr_temp_c)) -> mean_2mo
+  
+```
+
+Get mean max 
+
+```{r}
+lter0.2_2mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint, yearGR, monthGR, dayGR) %>% 
+  summarize(max_daily_temp = max(mean_hr_temp_c)) %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_2mo_mean_max = mean(max_daily_temp)) -> mean_max_2mo
+  
+```
+
+Compare
+
+```{r}
+mean_2mo %>% 
+  full_join(mean_max_2mo) %>% 
+  ggplot(aes(x = mean_2mo_temp, y = mean_2mo_mean_max, color = timepoint)) +
+  geom_point()
+```
+
+Compare with 6mo
+
+```{r}
+mean_2mo %>% 
+  full_join(mean_6mo) %>% 
+  ggplot(aes(x = mean_2mo_temp, y = mean_6mo_temp, color = timepoint)) +
+  geom_point() # not related
+```
+
+# Get statistics for preceeding 10 months
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t0"), "photo_10mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t3"), "photo_10mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t6"), "photo_10mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t9"), "photo_10mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_2[grep(photo_dates_2$timepoint, pattern = "t12"), "photo_10mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_10mo
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_10mo %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_10mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_10mo_temp = mean(mean_hr_temp_c)) -> mean_10mo
+  
+```
+
+Get mean max 
+
+```{r}
+lter0.2_10mo %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint, yearGR, monthGR, dayGR) %>% 
+  summarize(max_daily_temp = max(mean_hr_temp_c)) %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_10mo_mean_max = mean(max_daily_temp)) -> mean_max_10mo
+  
+```
+
+Compare
+
+```{r}
+mean_10mo %>% 
+  full_join(mean_max_10mo) %>% 
+  ggplot(aes(x = mean_10mo_temp, y = mean_10mo_mean_max, color = timepoint)) +
+  geom_point()
+```
+
+Compare with 6mo
+
+```{r}
+mean_10mo %>% 
+  full_join(mean_6mo) %>% 
+  ggplot(aes(x = mean_10mo_temp, y = mean_6mo_temp, color = timepoint)) +
+  geom_point()
+```
+
+Compare with 2 mo
+
+```{r}
+mean_10mo %>% 
+  full_join(mean_2mo) %>% 
+  ggplot(aes(x = mean_10mo_temp, y = mean_2mo_temp, color = timepoint)) +
+  geom_point() 
+```
+
+# Save CSV
+
+```{r}
+mean_6mo %>% 
+  full_join(mean_2mo) %>% 
+  write_csv(here("cleaned_data", "temperature_means.csv"))
+```
+
+# Robustness checks
+
+## 6 months
+
+Should try this with specific dates and with a general date (e.g., 8/20) and plot them against each other to see if we get the same relative hierarchy (don't want this to be too biased by when the photos were taken)
+
+```{r}
+photo_dates %>% 
+  # try this with a specific date
+  mutate(photo_datetime = as_datetime(paste0(photo_year, "-08-20"))) %>% 
+  # get the date of the half year previous
+  mutate(photo_6mo_date = photo_datetime - make_difftime(day = round(365/2))) %>% 
+  # get the date of the 2 months previous
+  mutate(photo_2mo_date = photo_datetime - make_difftime(day = round(365/6))) %>% 
+  # get the date of the 10 months preceeding (can't do 12 because 2017 doesn't go back far enough)
+  mutate(photo_10mo_date = photo_datetime - make_difftime(day = round(365/12*10))) -> photo_dates_3
+```
+
+Get the summaries
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_6mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_6mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_6mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_6mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_6mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_6mo_test
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_6mo_test %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_6mo_test %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_6mo_temp_test = mean(mean_hr_temp_c)) -> mean_6mo_test
+  
+```
+
+Compare with 
+
+```{r}
+mean_6mo_test %>% 
+  full_join(mean_6mo) %>% 
+  ggplot(aes(x = mean_6mo_temp_test, y = mean_6mo_temp, color = timepoint)) +
+  geom_point() 
+```
+
+## 2 months
+
+Get the summaries
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_2mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_2mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_2mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_2mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_2mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_2mo_test
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_2mo_test %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_2mo_test %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_2mo_temp_test = mean(mean_hr_temp_c)) -> mean_2mo_test
+  
+```
+
+Compare with 
+
+```{r}
+mean_2mo_test %>% 
+  full_join(mean_2mo) %>% 
+  ggplot(aes(x = mean_2mo_temp_test, y = mean_2mo_temp, color = timepoint)) +
+  geom_point() 
+```
+
+## 10 months
+
+Get the summaries
+
+```{r}
+lter0.2 %>% 
+  ungroup() %>% 
+  mutate(timepoint = case_when( # note: drop = TRUE is so it's not a tibble, just the real value
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t0"), "photo_10mo_date", drop = TRUE] ~ "t0",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t3"), "photo_10mo_date", drop = TRUE] ~ "t3",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t6"), "photo_10mo_date", drop = TRUE] ~ "t6",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t9"), "photo_10mo_date", drop = TRUE] ~ "t9",
+    time_local_hr < photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_datetime", drop = TRUE] &
+      time_local_hr > photo_dates_3[grep(photo_dates_3$timepoint, pattern = "t12"), "photo_10mo_date", drop = TRUE] ~ "t12",
+    TRUE ~ "NA"
+  )) -> lter0.2_10mo_test
+```
+
+Plot to make sure it worked
+
+```{r}
+lter0.2_10mo_test %>% 
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = timepoint)) +
+  geom_line() +
+  geom_vline(xintercept = photo_dates_2$photo_datetime)
+```
+
+Get mean:
+
+```{r}
+lter0.2_10mo_test %>% 
+  filter(timepoint != "NA") %>% 
+  group_by(timepoint) %>% 
+  summarize(mean_10mo_temp_test = mean(mean_hr_temp_c)) -> mean_10mo_test
+  
+```
+
+Compare with 
+
+```{r}
+mean_10mo_test %>% 
+  full_join(mean_10mo) %>% 
+  ggplot(aes(x = mean_10mo_temp_test, y = mean_10mo_temp, color = timepoint)) +
+  geom_point() 
+```
 
 
