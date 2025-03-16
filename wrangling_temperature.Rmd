@@ -1,0 +1,250 @@
+---
+title: "Temperature wrangling"
+output: html_document
+date: "2025-03-15"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# clear environment
+rm(list = ls())
+
+# load librarian (package for installing/loading packages)
+if (!require("librarian")) install.packages("librarian")
+
+# Load other necessary libraries
+librarian::shelf(here, # relative file paths
+                 tidyverse # data wrangling
+)
+```
+
+# Bring in the data
+
+Data for LTER 0 were sent by Tom Adam on January 27, 2025. Tom notes: "Here are the data from LTER0 10m.  There may be a couple of small data gaps (including ~ 1 week during July 2022) but otherwise I think this temperature record is mostly complete.  Let me know if you have any questions or if you discover any issues with the data."
+
+Data for LTER 2 were downloaded online from the MCR data catalog by Julianna. Note from the metadata: "Beginning in July 2021 data are raw temperature values sampled every two minutes (SBE 39s and SBE 56s) or eight minutes (Onset HOBOs) depending on the instrument."
+
+```{r read in data}
+lter0 <- read_csv(here("raw_data", "FOR00_BTM_10m_20170808_20240704.csv"))
+
+lter2 <- read_csv(here("raw_data", "MCR_LTER02_BottomMountThermistors_20230323.csv")) %>% 
+  filter(reef_type_code == "FOR") %>% 
+  filter(sensor_depth_m == 10) %>% 
+  # only need the time around when we need to fill in LTER 0
+  mutate(year = year(time_local)) %>% 
+  filter(year > 2020 &
+           year < 2023)
+```
+
+# LTER 0
+
+## Plot timeseries 
+
+```{r}
+lter0 %>% 
+  ggplot(aes(x = time_utc, y = temperature_c)) +
+  geom_line() # no obvious ones
+```
+
+## Look for gaps
+
+```{r}
+lter0 %>% 
+  mutate(time_diff = lead(time_local) - time_local) %>%  
+  # all time steps that are not 2 minutes
+  filter(time_diff != make_difftime(num = 120)) %>% 
+  group_by(time_diff) %>% 
+  summarize(count = n()) 
+  
+```
+
+See that we have a few types of gaps in the data:
+
+- 1 weeklong gap
+- 1 2-hour gap
+- 165 four-minute gaps
+- 44 gaps near 2 minutes but not exact
+- 253,355 0 second gaps
+
+
+What are all these 0 gaps?
+
+```{r}
+lter0 %>% 
+  filter(time_local == as_datetime("2021-08-04 10:00:01")) # look like duplicates 
+
+# are they all duplicates? get all the duplicates
+lter0 %>% 
+  mutate(time_diff = lead(time_local) - time_local) %>%  
+  filter(time_diff == make_difftime(num = 0)) %>% 
+  select(time_local) -> repeats
+
+# see if they're all the same
+lter0 %>% 
+  filter(time_local %in% repeats$time_local) %>% 
+  group_by(file_name, site, time_local, time_utc, reef_type_code, sensor_type, sensor_depth_m) %>% 
+  summarize(sd = sd(temperature_c),
+            count = n()) # YEP! All exact duplicates of 2... can just combine these
+```
+
+```{r combine zeros}
+lter0 %>% 
+  group_by(file_name, site, time_local, time_utc, reef_type_code, sensor_type, sensor_depth_m) %>% 
+  summarize(temperature_c = mean(temperature_c)) -> lter0_2
+  
+```
+
+
+**By far the biggest problem is the weeklong gap, which occurs on 2022-07-22 14:58:01**
+
+- Gap starts at *2022-07-22 14:58:01*
+- Gap ends at *2022-07-30 11:58:00* 
+
+
+## Look for period around then in LTER 2 data
+
+See if LTER 2 has the data missing from LTER 0
+
+```{r}
+lter2 %>% 
+  mutate(month = month(time_local)) %>% 
+  filter(year == 2022 &
+           month == 7) %>% 
+  select(site, time_local, sensor_type, temperature_c, year, month) -> lter2.07.22
+
+# plot
+lter2.07.22 %>% 
+  ggplot(aes(x = time_local, y = temperature_c)) +
+  geom_line()
+
+```
+
+Plot together with LTER 0 to see how similar they are
+
+```{r}
+# make LTER 0 in similar format
+lter0_2 %>% 
+  mutate(year = year(time_local),
+         month = month(time_local)) %>% 
+  filter(year == 2022 &
+           month == 7) %>% 
+  select(site, time_local, sensor_type, temperature_c, year, month) -> lter0.07.22
+
+# join together
+lter2.07.22  %>% 
+  rbind(lter0.07.22) -> july2022
+```
+
+Plot together
+
+```{r}
+july2022 %>% 
+  # plot time series
+  ggplot(aes(x = time_local, y = temperature_c, color = site)) +
+  geom_line() 
+```
+
+Actually differ more than I would have thought
+
+```{r}
+july2022 %>% 
+  mutate(day = day(time_local),
+         hour = hour(time_local)) %>% 
+  group_by(site, day, hour) %>% 
+  summarize(mean_temp = mean(temperature_c),
+            count = n()) %>% 
+  rename(day22 = day,
+         hour22 = hour) %>% 
+  # make new datetime column
+  mutate(time_local_hr = (as_datetime(paste0("2022-07-", day22, " ", hour22, ":00:00")))) %>% 
+  pivot_wider(names_from = site, values_from = mean_temp) %>% 
+  # compare time series
+  ggplot(aes(x = LTER00, y = LTER02, color = day22)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0)
+```
+
+Sometimes LTER 2 is higher and sometimes LTER 0 is, but it's relatively well correlated?
+
+- More well correlated in the later part of the month, which is when the gap is (I think--July 22-30)
+
+# Get hourly averages
+
+To deal with weird gaps and also how how long it takes a water body to pass I think it makes sense to use hourly averages
+
+```{r}
+# get hourly averages for LTER 0
+lter0_2 %>% 
+  # make grouping variables
+  mutate(yearGR = year(time_local),
+         monthGR = month(time_local),
+         dayGR = day(time_local),
+         hourGR = hour(time_local)) %>%
+  group_by(site, yearGR, monthGR, dayGR, hourGR) %>% 
+  summarize(mean_hr_temp_c = mean(temperature_c),
+            count = n()) -> lter0_3
+
+# get hourly averages for LTER 2
+lter2 %>% 
+  # make grouping variables
+  mutate(yearGR = year(time_local),
+         monthGR = month(time_local),
+         dayGR = day(time_local),
+         hourGR = hour(time_local)) %>%
+  group_by(site, yearGR, monthGR, dayGR, hourGR) %>% 
+  summarize(mean_hr_temp_c = mean(temperature_c),
+            count = n()) -> lter2_2
+```
+
+Get gaps from LTER2
+
+```{r}
+lter2_2 %>% 
+  filter(yearGR == 2022 & monthGR == 7) %>% 
+  filter(dayGR > 21 & dayGR < 31) -> lter2_3
+```
+
+
+month 7, day 22, hour 14 is the last full hour, then 7/30 with 12 hrs 
+
+- Gap starts at *2022-07-22 14:58:01*
+- Gap ends at *2022-07-30 11:58:00* 
+
+Get rid of trailing bits on the 22nd and 30th
+
+```{r}
+lter0_3 %>% 
+  # filter out missing partial days
+  filter(!(yearGR == 2022 & monthGR == 7 & dayGR == 22)) %>% 
+  filter(!(yearGR == 2022 & monthGR == 7 & dayGR == 30)) -> lter0_4
+```
+
+# Fill gap from LTER 0 with LTER 2 data
+
+```{r}
+lter0_4 %>% 
+  rbind(lter2_3) %>% 
+  # add datetime column back
+  mutate(time_local_hr = (as_datetime(paste0(yearGR, "-", monthGR, "-", dayGR, " ", hourGR, ":00:00")))) -> lter0.2
+```
+
+Plot to see if it looks right
+
+```{r}
+lter0.2 %>% 
+  filter(yearGR == 2022) %>% 
+  # plot time series
+  ggplot(aes(x = time_local_hr, y = mean_hr_temp_c, color = site)) +
+  geom_line() # looks right!
+```
+
+
+
+
